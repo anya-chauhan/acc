@@ -9,6 +9,8 @@ library(ggplot2)
 library(plotly)
 library(scales)
 library(viridis)
+library(cluster)
+library(factoextra)
 
 # Load the dataset
 df <- read.csv('ML-final.csv')
@@ -75,7 +77,7 @@ graph_data <- create_graph(df)
 ui <- dashboardPage(
   dashboardHeader(title = "AI Career Explorer"),
   dashboardSidebar(
-    selectInput("view_selector", "Select View:", choices = c("Interactive Network", "Quick Insights")),
+    selectInput("view_selector", "Select View:", choices = c("Interactive Network", "Quick Insights", "Full Graph", "Cluster Analysis")),
     conditionalPanel(
       condition = "input.view_selector == 'Interactive Network'",
       tags$div(
@@ -113,7 +115,6 @@ ui <- dashboardPage(
     )
   )
 )
-
 
 server <- function(input, output, session) {
   
@@ -277,6 +278,18 @@ server <- function(input, output, session) {
                         uiOutput("node_info"), width = 12))
         )
       )
+    } else if (input$view_selector == "Full Graph") {
+      tagList(
+        fluidRow(
+          column(12, forceNetworkOutput("full_graph_plot", height = "600px"))
+        )
+      )
+    } else if (input$view_selector == "Cluster Analysis") {
+      tagList(
+        fluidRow(
+          column(12, htmlOutput("cluster_plot", height = "600px"))
+        )
+      )
     } else {
       tagList(
         fluidRow(
@@ -304,6 +317,97 @@ server <- function(input, output, session) {
     )
     
     ggplotly(plot)
+  })
+  
+  output$full_graph_plot <- renderForceNetwork({
+    full_g <- graph_data$full_graph
+    
+    if (vcount(full_g) == 0) {
+      return(NULL)
+    }
+    
+    nodes <- data.frame(
+      id = seq_len(vcount(full_g)) - 1,
+      name = V(full_g)$name,
+      group = V(full_g)$type,
+      job_postings = V(full_g)$job_postings,
+      companies_hiring = V(full_g)$companies_hiring,
+      stringsAsFactors = FALSE
+    )
+    
+    links <- as.data.frame(as_edgelist(full_g, names = FALSE) - 1)
+    names(links) <- c("source", "target")
+    links$value <- 1
+    
+    color_palette <- c("Skill" = "#4CAF50", "Job Title" = "#2196F3", "Company" = "#FFC107")
+    nodes$color <- color_palette[nodes$group]
+    
+    # Normalize job_postings for node size
+    min_size <- 5
+    max_size <- 20
+    nodes$node_size <- ifelse(nodes$group == "Skill" & !is.na(nodes$job_postings), 
+                              pmin(pmax(nodes$job_postings / 2, min_size), max_size), 
+                              min_size)
+    
+    forceNetwork(Links = links, Nodes = nodes,
+                 Source = "source", Target = "target",
+                 Value = "value", NodeID = "name",
+                 Group = "group", Nodesize = "node_size",
+                 opacity = 0.8,
+                 linkDistance = 100, charge = -300,
+                 fontSize = 14, zoom = TRUE,
+                 colourScale = JS("d3.scaleOrdinal().domain(['Skill', 'Job Title', 'Company']).range(['#4CAF50', '#2196F3', '#FFC107'])"),
+                 legend = TRUE,
+                 opacityNoHover = 0.5,
+                 arrows = FALSE,
+                 bounded = TRUE,
+                 clickAction = "Shiny.setInputValue('selected_node', d.name);")
+  })
+  
+  output$cluster_plot <- renderUI({
+    full_g <- graph_data$full_graph
+    if (vcount(full_g) == 0) return(NULL)
+    
+    # Cluster detection
+    cl <- cluster_louvain(full_g)
+    membership <- membership(cl)
+    
+    nodes <- data.frame(
+      id = seq_len(vcount(full_g)) - 1,
+      name = V(full_g)$name,
+      group = membership,
+      job_postings = V(full_g)$job_postings,
+      companies_hiring = V(full_g)$companies_hiring,
+      stringsAsFactors = FALSE
+    )
+    
+    links <- as.data.frame(as_edgelist(full_g, names = FALSE) - 1)
+    names(links) <- c("source", "target")
+    links$value <- 1
+    
+    color_palette <- brewer.pal(n = max(membership), name = "Set3")
+    nodes$color <- color_palette[membership]
+    
+    # Normalize job_postings for node size
+    min_size <- 5
+    max_size <- 20
+    nodes$node_size <- ifelse(nodes$job_postings > 0, 
+                              pmin(pmax(nodes$job_postings / 2, min_size), max_size), 
+                              min_size)
+    
+    forceNetwork(Links = links, Nodes = nodes,
+                 Source = "source", Target = "target",
+                 Value = "value", NodeID = "name",
+                 Group = "group", Nodesize = "node_size",
+                 opacity = 0.8,
+                 linkDistance = 100, charge = -300,
+                 fontSize = 14, zoom = TRUE,
+                 colourScale = JS(sprintf("d3.scaleOrdinal().domain(d3.range(%d)).range(%s)", max(membership), jsonlite::toJSON(color_palette))),
+                 legend = TRUE,
+                 opacityNoHover = 0.5,
+                 arrows = FALSE,
+                 bounded = TRUE,
+                 clickAction = "Shiny.setInputValue('selected_node', d.name);")
   })
   
 }
